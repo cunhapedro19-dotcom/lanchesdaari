@@ -1,0 +1,1087 @@
+"use client";
+
+import Link from "next/link";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type { MenuItem, ReceivingMode } from "@/db/schema";
+import { emojiFor, formatBRL, formatPhone, isValidWhatsApp, onlyDigits, parsePriceToCents } from "@/lib/format";
+import {
+  availableReceivingModes,
+  buildWhatsAppMessage,
+  changeForLabel,
+  emptySelection,
+  mealSubSteps,
+  newLineKey,
+  orderSummary,
+  resolveLine,
+  resolveOrder,
+  whatsappUrl,
+  type MealLine,
+  type MealSub,
+  type MenuData,
+  type OrderSelection,
+  type PublicMeal,
+  type ResolvedLine,
+} from "@/lib/order";
+
+type Sub = "meal" | MealSub;
+type Phase = "builder" | "cart" | "receiving" | "contact" | "payment" | "notes" | "review";
+type View = { phase: "builder"; sub: Sub; lineKey: string } | { phase: Exclude<Phase, "builder"> };
+
+const PHASES: Phase[] = ["builder", "cart", "receiving", "contact", "payment", "notes", "review"];
+const PHASE_LABELS: Record<Phase, string> = {
+  builder: "Menu",
+  cart: "Seu pedido",
+  receiving: "Recebimento",
+  contact: "Seus dados",
+  payment: "Pagamento",
+  notes: "Observações",
+  review: "Confirmar",
+};
+const NOTE_SUGGESTIONS = ["Sem cebola", "Sem tomate", "Sem alface", "Sem maionese", "Sem picles", "Molho à parte", "Bem passado"];
+
+type Persisted = { sel: OrderSelection; view: View };
+
+function sanitize(menu: MenuData, raw: Partial<OrderSelection> | undefined): OrderSelection {
+  const lines: MealLine[] = [];
+  for (const l of raw?.lines ?? []) {
+    const meal = menu.meals.find((m) => m.id === l.mealId);
+    if (!meal) continue;
+    const proteinId = meal.proteins.some((p) => p.id === l.proteinId) ? l.proteinId : null;
+    const sideIds = (l.sideIds ?? []).filter((id) => meal.choices.some((c) => c.id === id)).slice(0, meal.maxChoices);
+    const extraIds = meal.allowExtras ? (l.extraIds ?? []).filter((id) => menu.extras.some((e) => e.id === id)) : [];
+    const done = !!l.done && (meal.proteins.length === 0 || proteinId !== null);
+    lines.push({ key: l.key || newLineKey(), mealId: meal.id, proteinId, sideIds, extraIds, note: meal.allowNotes ? String(l.note ?? "") : "", done });
+  }
+  const drinkQty: Record<string, number> = {};
+  for (const d of menu.drinks) {
+    const q = Math.floor(Number(raw?.drinkQty?.[String(d.id)] ?? 0));
+    if (q > 0) drinkQty[String(d.id)] = Math.min(q, 20);
+  }
+  const modes = availableReceivingModes(menu.config).map((m) => m.mode);
+  const receivingMode = raw?.receivingMode && modes.includes(raw.receivingMode) ? raw.receivingMode : null;
+  return {
+    lines,
+    drinkQty,
+    note: String(raw?.note ?? ""),
+    receivingMode,
+    customer: { ...emptySelection.customer, ...(raw?.customer ?? {}) },
+    paymentMethodId: menu.payments.some((p) => p.id === raw?.paymentMethodId) ? (raw?.paymentMethodId ?? null) : null,
+    needsChange: raw?.needsChange ?? null,
+    changeFor: String(raw?.changeFor ?? ""),
+  };
+}
+
+function subsFor(meal: PublicMeal, menu: MenuData): Sub[] {
+  return ["meal", ...mealSubSteps(meal, menu)];
+}
+
+export default function OrderBuilder({ menu }: { menu: MenuData }) {
+  const { config } = menu;
+  const storageKey = `pedido-${config.slug}-v5`;
+  const receivingOptions = useMemo(() => availableReceivingModes(config), [config]);
+
+  const [sel, setSel] = useState<OrderSelection>(emptySelection);
+  const [view, setView] = useState<View>(() => ({ phase: "builder", sub: "meal", lineKey: newLineKey() }));
+  const [hydrated, setHydrated] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [limitNotice, setLimitNotice] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loggedMessage = useRef<string | null>(null);
+
+  const order = useMemo(() => resolveOrder(menu, sel), [menu, sel]);
+  const doneLines = order.lines;
+  const receiving = order.receiving;
+  const drinksCount = order.drinks.reduce((s, d) => s + d.qty, 0);
+  const cartCount = doneLines.length + drinksCount;
+
+  const currentLine = view.phase === "builder" ? (sel.lines.find((l) => l.key === view.lineKey) ?? null) : null;
+  const currentMeal = currentLine ? (menu.meals.find((m) => m.id === currentLine.mealId) ?? null) : null;
+  const currentResolved = currentLine ? resolveLine(menu, currentLine) : null;
+  const currentSubs = currentMeal ? subsFor(currentMeal, menu) : (["meal"] as Sub[]);
+
+  /* ---------- Persistência (sobrevive a um recarregamento) ---------- */
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(storageKey);
+      if (raw) {
+        const saved = JSON.parse(raw) as Partial<Persisted>;
+        const cleanSel = sanitize(menu, saved.sel);
+        // Descarta itens que ficaram pela metade (não concluídos): eles não podem
+        // aparecer contados/preçados como se estivessem no pedido
+        cleanSel.lines = cleanSel.lines.filter((l) => l.done);
+        setSel(cleanSel);
+        const v = saved.view;
+        let restored: View | null = null;
+        if (v && v.phase === "builder") {
+          const line = cleanSel.lines.find((l) => l.key === v.lineKey);
+          if (line) {
+            const meal = menu.meals.find((m) => m.id === line.mealId)!;
+            restored = { phase: "builder", lineKey: line.key, sub: subsFor(meal, menu).includes(v.sub) ? v.sub : "meal" };
+          } else if (v.sub === "meal") {
+            restored = { phase: "builder", sub: "meal", lineKey: v.lineKey || newLineKey() };
+          }
+        } else if (v && PHASES.includes(v.phase)) {
+          restored = cleanSel.lines.some((l) => l.done) || Object.keys(cleanSel.drinkQty).length > 0 ? v : null;
+        }
+        if (restored) setView(restored);
+        // Sem tela salva: fica no menu (de onde se adiciona itens)
+      }
+    } catch {
+      /* ignora */
+    }
+    setHydrated(true);
+  }, [menu, storageKey]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    sessionStorage.setItem(storageKey, JSON.stringify({ sel, view } satisfies Persisted));
+  }, [sel, view, hydrated, storageKey]);
+
+  useEffect(() => {
+    window.scrollTo({ top: 0 });
+    setError(null);
+    if (view.phase !== "builder") {
+      setSel((prev) => (prev.lines.some((l) => !l.done) ? { ...prev, lines: prev.lines.filter((l) => l.done) } : prev));
+    }
+  }, [view]);
+
+  // Se só existe uma forma de recebimento, já deixa escolhida
+  useEffect(() => {
+    if (!hydrated) return;
+    if (receivingOptions.length === 1 && sel.receivingMode !== receivingOptions[0].mode) {
+      setSel((prev) => ({ ...prev, receivingMode: receivingOptions[0].mode }));
+    }
+  }, [hydrated, receivingOptions, sel.receivingMode]);
+
+  /* ---------- Atualizações de estado ---------- */
+  function update(patch: Partial<OrderSelection>) {
+    setSel((prev) => ({ ...prev, ...patch }));
+    setError(null);
+  }
+  function updateCustomer(patch: Partial<OrderSelection["customer"]>) {
+    setSel((prev) => ({ ...prev, customer: { ...prev.customer, ...patch } }));
+    setError(null);
+  }
+  function updateLine(key: string, patch: Partial<MealLine> | ((line: MealLine) => Partial<MealLine>)) {
+    setSel((prev) => ({
+      ...prev,
+      lines: prev.lines.map((l) => (l.key === key ? { ...l, ...(typeof patch === "function" ? patch(l) : patch) } : l)),
+    }));
+    setError(null);
+  }
+  function chooseMeal(mealId: number) {
+    if (view.phase !== "builder") return;
+    const key = view.lineKey;
+    setSel((prev) => {
+      const existing = prev.lines.find((l) => l.key === key);
+      if (existing && existing.mealId === mealId) return prev;
+      const fresh: MealLine = { key, mealId, proteinId: null, sideIds: [], extraIds: [], note: "", done: false };
+      return { ...prev, lines: existing ? prev.lines.map((l) => (l.key === key ? fresh : l)) : [...prev.lines, fresh] };
+    });
+    setError(null);
+  }
+  /** Toque no nome do produto: abre a montagem dele (ou adiciona direto quando não tem etapas). */
+  function openMeal(meal: PublicMeal) {
+    if (view.phase !== "builder") return;
+    const subs = mealSubSteps(meal, menu);
+    if (subs.length === 0) {
+      quickAdd(meal); // produto sem etapas: adiciona direto
+      return;
+    }
+    chooseMeal(meal.id);
+    setView({ phase: "builder", lineKey: view.lineKey, sub: subs[0] });
+  }
+
+  /** Adiciona o produto direto no pedido, sem passar pelas etapas de personalização. */
+  function quickAdd(meal: PublicMeal) {
+    if (view.phase !== "builder") return;
+    // Produto que exige escolha (ex.: proteína) abre a montagem normal
+    if (meal.proteins.length > 0) {
+      chooseMeal(meal.id);
+      setView({ phase: "builder", sub: "protein", lineKey: view.lineKey });
+      return;
+    }
+    // Este produto já está em montagem (linha não concluída)? Continua a montagem
+    // dele em vez de somar outro igual — evita o "um lanche saindo pelo preço de dois".
+    if (currentLine && !currentLine.done && currentLine.mealId === meal.id) {
+      const subs = mealSubSteps(meal, menu);
+      if (subs.length > 0) {
+        setView({ phase: "builder", lineKey: currentLine.key, sub: subs[0] });
+        return;
+      }
+      updateLine(currentLine.key, { done: true });
+      setView({ phase: "builder", sub: "meal", lineKey: newLineKey() });
+      return;
+    }
+    setSel((prev) => ({
+      ...prev,
+      lines: [...prev.lines, { key: newLineKey(), mealId: meal.id, proteinId: null, sideIds: [], extraIds: [], note: "", done: true }],
+    }));
+    setError(null);
+  }
+  function toggleSide(id: number) {
+    if (!currentLine || !currentMeal) return;
+    const max = currentMeal.maxChoices;
+    updateLine(currentLine.key, (l) => {
+      if (l.sideIds.includes(id)) return { sideIds: l.sideIds.filter((x) => x !== id) };
+      if (l.sideIds.length >= max) {
+        showLimit(`Você pode escolher até ${max} acompanhamento${max === 1 ? "" : "s"}.`);
+        return {};
+      }
+      return { sideIds: [...l.sideIds, id] };
+    });
+  }
+  function showLimit(msg: string) {
+    setLimitNotice(msg);
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    noticeTimer.current = setTimeout(() => setLimitNotice(null), 2500);
+  }
+  function toggleExtra(id: number) {
+    if (!currentLine) return;
+    updateLine(currentLine.key, (l) => ({ extraIds: l.extraIds.includes(id) ? l.extraIds.filter((x) => x !== id) : [...l.extraIds, id] }));
+  }
+  function appendNote(suggestion: string) {
+    if (!currentLine) return;
+    updateLine(currentLine.key, (l) => {
+      const current = l.note.trim();
+      if (current.toLowerCase().includes(suggestion.toLowerCase())) return {};
+      return { note: current ? `${current.replace(/[.,\s]+$/, "")}, ${suggestion.toLowerCase()}` : suggestion };
+    });
+  }
+  function setDrinkQty(id: number, qty: number) {
+    setSel((prev) => {
+      const next = { ...prev.drinkQty };
+      if (qty <= 0) delete next[String(id)];
+      else next[String(id)] = Math.min(qty, 20);
+      return { ...prev, drinkQty: next };
+    });
+    setError(null);
+  }
+
+  /* ---------- Navegação ---------- */
+  function startNewMeal() {
+    setView({ phase: "builder", sub: "meal", lineKey: newLineKey() });
+  }
+  function editLine(line: ResolvedLine) {
+    const subs = subsFor(line.meal, menu);
+    setView({ phase: "builder", lineKey: line.key, sub: subs.length > 1 ? subs[1] : "meal" });
+  }
+  function duplicateLine(line: ResolvedLine) {
+    setSel((prev) => {
+      const idx = prev.lines.findIndex((l) => l.key === line.key);
+      if (idx < 0) return prev;
+      const copy: MealLine = { ...prev.lines[idx], key: newLineKey(), done: true };
+      const lines = [...prev.lines];
+      lines.splice(idx + 1, 0, copy);
+      return { ...prev, lines };
+    });
+  }
+  function removeLine(key: string) {
+    const remaining = sel.lines.filter((l) => l.key !== key);
+    setSel((prev) => ({ ...prev, lines: prev.lines.filter((l) => l.key !== key) }));
+    // Se ainda tem bebida no pedido, fica no carrinho em vez de voltar pra montagem
+    if (!remaining.some((l) => l.done) && drinksCount === 0) startNewMeal();
+  }
+
+  /** Tira uma unidade de um produto que entrou pelo + (remove a última linha dele no pedido). */
+  function removeQuick(mealId: number) {
+    setSel((prev) => {
+      let idx = -1;
+      // Preferir remover uma unidade simples (sem adicional, escolha ou observação)
+      for (let i = prev.lines.length - 1; i >= 0; i--) {
+        const l = prev.lines[i];
+        if (l.done && l.mealId === mealId && l.extraIds.length === 0 && l.sideIds.length === 0 && !l.note.trim()) {
+          idx = i;
+          break;
+        }
+      }
+      if (idx < 0) {
+        for (let i = prev.lines.length - 1; i >= 0; i--) {
+          if (prev.lines[i].done && prev.lines[i].mealId === mealId) {
+            idx = i;
+            break;
+          }
+        }
+      }
+      if (idx < 0) return prev;
+      return { ...prev, lines: prev.lines.filter((_, i) => i !== idx) };
+    });
+    setError(null);
+  }
+
+  function previousView(): View | null {
+    if (view.phase === "builder") {
+      // O menu é a primeira tela: voltar sai do pedido (pra home).
+      // O botão "Ver pedido" no rodapé é que leva ao carrinho.
+      if (view.sub === "meal") return null;
+      const idx = currentSubs.indexOf(view.sub);
+      // Editando um item que já está no pedido: voltar na primeira etapa retorna ao carrinho
+      if (idx === 1 && currentLine?.done) return { phase: "cart" };
+      return { phase: "builder", lineKey: view.lineKey, sub: currentSubs[Math.max(idx - 1, 0)] };
+    }
+    // Do carrinho, voltar sempre leva pro menu (de onde se adiciona itens)
+    if (view.phase === "cart") return { phase: "builder", sub: "meal", lineKey: newLineKey() };
+    const idx = PHASES.indexOf(view.phase);
+    return { phase: PHASES[idx - 1] as Exclude<Phase, "builder"> };
+  }
+  const prev = previousView();
+  function back() {
+    if (!prev) return;
+    // Voltar da PRIMEIRA etapa da montagem = desistir do item: tira a linha que
+    // ficou pela metade (era ela que fazia sair "um lanche pelo preço de dois")
+    if (view.phase === "builder" && prev.phase === "builder" && prev.sub === "meal" && currentLine && !currentLine.done) {
+      setSel((p) => ({ ...p, lines: p.lines.filter((l) => l.key !== currentLine.key) }));
+    }
+    setView(prev);
+  }
+
+  function validateCurrent(): string | null {
+    const c = sel.customer;
+    switch (view.phase) {
+      case "builder":
+        // Na lista do menu dá pra continuar só com bebida (ou com o que já está no pedido)
+        if (view.sub === "meal" && !currentMeal) return cartCount > 0 ? null : "Adicione um produto ou uma bebida para continuar.";
+        if (!currentLine || !currentMeal) return "Escolha um produto para continuar.";
+        if (view.sub === "protein" && !currentLine.proteinId) return "Escolha a proteína para continuar.";
+        return null;
+      case "cart":
+        if (!doneLines.length && !order.drinks.length) return "Adicione pelo menos um item ao pedido.";
+        if (config.drinkRequired && order.drinks.length === 0) return "Escolha pelo menos uma bebida para continuar.";
+        return null;
+      case "receiving":
+        if (receivingOptions.length === 0) return "O estabelecimento ainda não configurou como entrega os pedidos.";
+        return sel.receivingMode ? null : "Escolha como você deseja receber.";
+      case "contact": {
+        if (!c.name.trim()) return "Informe seu nome.";
+        if (onlyDigits(c.phone).length < 10) return "Informe um telefone com DDD.";
+        if (receiving?.needsAddress) {
+          if (!c.street.trim()) return "Informe o endereço (rua).";
+          if (!c.number.trim()) return "Informe o número.";
+          if (!c.neighborhood.trim()) return "Informe o bairro.";
+        }
+        return null;
+      }
+      case "payment": {
+        if (!order.payment) return "Escolha como você vai pagar.";
+        if (order.payment.asksChange) {
+          if (sel.needsChange === null) return "Nos diga se precisa de troco.";
+          if (sel.needsChange) {
+            const cents = parsePriceToCents(sel.changeFor);
+            if (!cents) return "Informe para quanto precisa de troco.";
+            if (cents < order.subtotal) return `O valor precisa ser pelo menos o subtotal (${formatBRL(order.subtotal)}).`;
+          }
+        }
+        return null;
+      }
+      default:
+        return null;
+    }
+  }
+
+  function next() {
+    const problem = validateCurrent();
+    if (problem) {
+      setError(problem);
+      return;
+    }
+    if (view.phase === "builder" && currentLine) {
+      const idx = currentSubs.indexOf(view.sub);
+      if (idx >= currentSubs.length - 1) {
+        const wasEditing = currentLine.done;
+        updateLine(currentLine.key, { done: true });
+        // Depois de adicionar um item, volta pro MENU pra poder adicionar mais
+        // sem fechar o pedido (só quem estava editando um item do carrinho volta pra ele)
+        setView(wasEditing ? { phase: "cart" } : { phase: "builder", sub: "meal", lineKey: newLineKey() });
+      } else {
+        setView({ phase: "builder", lineKey: currentLine.key, sub: currentSubs[idx + 1] });
+      }
+      return;
+    }
+    const idx = PHASES.indexOf(view.phase);
+    setView({ phase: PHASES[Math.min(idx + 1, PHASES.length - 1)] as Exclude<Phase, "builder"> });
+  }
+
+  const message = useMemo(() => buildWhatsAppMessage(menu, sel), [menu, sel]);
+  const waLink = whatsappUrl(config.whatsappNumber, message);
+
+  /** Registra o pedido no painel do estabelecimento (o envio em si é feito pelo cliente, no WhatsApp). */
+  function logOrder() {
+    if (loggedMessage.current === message || !sel.receivingMode) return;
+    loggedMessage.current = message;
+    try {
+      const body = JSON.stringify({
+        slug: config.slug,
+        customerName: sel.customer.name,
+        customerPhone: sel.customer.phone,
+        receivingMode: sel.receivingMode,
+        paymentName: order.payment?.name ?? "",
+        subtotalCents: order.subtotal,
+        summary: orderSummary(order),
+        message,
+      });
+      fetch("/api/pedidos", { method: "POST", headers: { "Content-Type": "application/json" }, body, keepalive: true }).catch(() => {});
+    } catch {
+      /* ignora */
+    }
+  }
+
+  async function copyMessage() {
+    try {
+      await navigator.clipboard.writeText(message);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* ignora */
+    }
+  }
+
+  /* ---------- Textos ---------- */
+  const phaseIndex = PHASES.indexOf(view.phase);
+  const isLastSub = view.phase === "builder" && currentMeal !== null && currentSubs.indexOf(view.sub) === currentSubs.length - 1;
+  const maxChoices = currentMeal?.maxChoices ?? 0;
+
+  let title = "";
+  if (view.phase === "builder") {
+    const t: Record<Sub, string> = {
+      meal: "O que você deseja?",
+      protein: "Escolha a proteína",
+      sides: maxChoices === 1 ? "Escolha 1 acompanhamento" : `Escolha até ${maxChoices} acompanhamentos`,
+      extras: "Quer adicionar algo?",
+      note: "Alguma observação?",
+    };
+    title = t[view.sub];
+  } else {
+    const t: Record<Exclude<Phase, "builder">, string> = {
+      cart: "Seu pedido",
+      receiving: "Como você deseja receber?",
+      contact: receiving?.needsAddress ? "Endereço de entrega" : "Quem vai retirar?",
+      payment: "Como você vai pagar?",
+      notes: "Alguma observação?",
+      review: "Confirme seu pedido",
+    };
+    title = t[view.phase];
+  }
+
+  let primaryLabel = "Continuar";
+  if (view.phase === "builder") {
+    if (view.sub === "meal" && !currentMeal) primaryLabel = cartCount > 0 ? `Ver pedido (${cartCount})` : "Continuar";
+    else if (view.sub === "meal") primaryLabel = currentLine?.done ? "Salvar" : currentSubs.length === 1 ? "Adicionar ao pedido" : "Montar";
+    else if (isLastSub) primaryLabel = currentLine?.done ? "Salvar" : "Adicionar ao pedido";
+  } else if (view.phase === "notes") primaryLabel = "Revisar pedido";
+
+  const lineNumber = currentLine ? sel.lines.findIndex((l) => l.key === currentLine.key) + 1 : 0;
+  const sidesCount = currentLine?.sideIds.length ?? 0;
+
+  // Agrupa os produtos por categoria (quando o estabelecimento usa categorias)
+  const mealGroups = useMemo(() => {
+    const groups: { name: string; meals: PublicMeal[] }[] = [];
+    for (const m of menu.meals) {
+      const name = m.category.trim();
+      const g = groups.find((x) => x.name === name);
+      if (g) g.meals.push(m);
+      else groups.push({ name, meals: [m] });
+    }
+    return groups;
+  }, [menu.meals]);
+  const showGroupTitles = mealGroups.some((g) => g.name);
+
+  const footerHint =
+    receiving?.mode === "pickup"
+      ? "Retirada no local · sem taxa de entrega"
+      : receiving
+        ? "Taxa de entrega: consultar pelo WhatsApp"
+        : "Entrega (se houver): consultar pelo WhatsApp";
+
+  return (
+    <div className="mx-auto flex min-h-dvh w-full max-w-md flex-col bg-night-950 sm:my-6 sm:min-h-0 sm:rounded-[2rem] sm:shadow-xl">
+      {/* Cabeçalho com progresso */}
+      <header className="sticky top-0 z-20 border-b border-night-800 bg-night-950/95 px-4 pb-3 pt-3 backdrop-blur sm:rounded-t-[2rem]">
+        <div className="flex items-center gap-3">
+          {prev ? (
+            <button type="button" onClick={back} aria-label="Voltar" className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-night-800 text-xl shadow-sm">
+              ←
+            </button>
+          ) : (
+            <Link href={`/${config.slug}`} aria-label="Voltar ao início" className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-night-800 text-xl shadow-sm">
+              ←
+            </Link>
+          )}
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-xs font-bold uppercase tracking-wide text-white/55">
+              Etapa {phaseIndex + 1} de {PHASES.length} · {PHASE_LABELS[view.phase]}
+              {view.phase === "builder" && currentMeal && sel.lines.length > 1 ? ` ${lineNumber}` : ""}
+              {view.phase === "builder" && currentMeal && view.sub !== "meal" ? ` · ${currentMeal.name}` : ""}
+            </p>
+            <h1 className="truncate font-display text-xl leading-tight tracking-wide">{title}</h1>
+          </div>
+        </div>
+        <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-night-800">
+          <div className="h-full rounded-full bg-ari-red shadow-[0_0_14px_rgba(229,18,27,0.55)] transition-all duration-300" style={{ width: `${((phaseIndex + 1) / PHASES.length) * 100}%` }} />
+        </div>
+      </header>
+
+      <main className="flex-1 px-4 pb-44 pt-4">
+        {/* ---------- Escolha do produto ---------- */}
+        {view.phase === "builder" && view.sub === "meal" && (
+          <div className="space-y-3">
+            {cartCount > 0 && (
+              <p className="rounded-2xl bg-night-800 px-4 py-3 text-sm font-bold text-white/80">
+                🛒 Seu pedido já tem {cartCount} {cartCount === 1 ? "item" : "itens"} — pode adicionar mais.
+              </p>
+            )}
+            {menu.meals.length > 0 && <p className="px-1 text-sm text-white/55">Toque no produto pra escolher as opções, ou no + pra adicionar direto.</p>}
+            {menu.meals.length === 0 && <EmptyNotice text="Nenhum produto disponível no momento." />}
+            {mealGroups.map((group) => (
+              <div key={group.name || "_"} className="space-y-3">
+                {showGroupTitles && <h2 className="px-1 pt-2 font-display text-sm uppercase tracking-wider text-ari-yellow">{group.name || "Outros"}</h2>}
+                {group.meals.map((m) => {
+                  const selected = currentLine?.mealId === m.id;
+                  // Quantos deste produto já estão no pedido (mostra a seleção múltipla)
+                  const addedCount = doneLines.filter((l) => l.meal.id === m.id).length;
+                  const hints: string[] = [];
+                  if (m.proteins.length) hints.push("você escolhe a proteína");
+                  if (m.choices.length && m.maxChoices > 0) hints.push(`até ${m.maxChoices} acompanhamento${m.maxChoices === 1 ? "" : "s"} à sua escolha`);
+                  return (
+                    <div key={m.id} className={`option-card flex-col !items-stretch !p-0 overflow-hidden ${selected ? "option-card-selected" : ""}`}>
+                      {m.imageUrl && <img src={m.imageUrl} alt={m.name} className="h-44 w-full object-cover" loading="lazy" />}
+                      <div className="p-4">
+                        <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={() => openMeal(m)}
+                            className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                          >
+                            <span className="min-w-0 flex-1">
+                              <span className="block text-lg font-extrabold leading-tight">{m.name}</span>
+                              {m.description && <span className="mt-0.5 block text-sm text-white/55">{m.description}</span>}
+                            </span>
+                            <span className="shrink-0 text-base font-extrabold text-ari-yellow">{formatBRL(m.priceCents)}</span>
+                          </button>
+                          {addedCount === 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => quickAdd(m)}
+                              aria-label={`Adicionar ${m.name} ao pedido`}
+                              className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-ari-red text-xl font-extrabold text-white shadow-[0_0_14px_rgba(229,18,27,0.4)] active:scale-90"
+                            >
+                              +
+                            </button>
+                          ) : (
+                            /* Já tem no pedido: vira contador, igual ao das bebidas */
+                            <span className="flex shrink-0 items-center gap-1">
+                              <button
+                                type="button"
+                                aria-label={`Remover uma unidade de ${m.name}`}
+                                onClick={() => removeQuick(m.id)}
+                                className="grid h-9 w-9 place-items-center rounded-full border-2 border-night-700 bg-night-800 text-lg font-extrabold text-white active:scale-90"
+                              >
+                                −
+                              </button>
+                              <span className="w-7 text-center text-base font-extrabold text-ari-yellow">{addedCount}</span>
+                              <button
+                                type="button"
+                                aria-label={`Adicionar mais um ${m.name}`}
+                                onClick={() => quickAdd(m)}
+                                className="grid h-9 w-9 place-items-center rounded-full bg-ari-red text-lg font-extrabold text-white active:scale-90"
+                              >
+                                +
+                              </button>
+                            </span>
+                          )}
+                        </div>
+                        {m.included.length > 0 && (
+                          <p className="mt-3 text-sm text-white/80">
+                            <span className="font-bold">Já acompanha:</span> {m.included.map((i) => `${emojiFor(i.name)} ${i.name}`).join(" · ")}
+                          </p>
+                        )}
+                        {hints.length > 0 && <p className="mt-1 text-xs font-semibold text-ari-yellow">✓ {hints.join(" · ")}</p>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+            {/* Bebidas no menu: dá pra comprar só bebida, sem produto principal */}
+            {menu.drinks.length > 0 && (
+              <div className="space-y-3">
+                <h2 className="px-1 pt-2 font-display text-sm uppercase tracking-wider text-ari-yellow">Bebidas</h2>
+                {menu.drinks.map((d) => (
+                  <DrinkRow key={d.id} item={d} qty={sel.drinkQty[String(d.id)] ?? 0} onQty={(q) => setDrinkQty(d.id, q)} />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ---------- Proteína ---------- */}
+        {view.phase === "builder" && view.sub === "protein" && currentMeal && currentLine && (
+          <div className="space-y-3">
+            <IncludedBlock meal={currentMeal} />
+            {currentMeal.proteins.map((p) => (
+              <OptionRow key={p.id} item={p} selected={currentLine.proteinId === p.id} kind="radio" onClick={() => updateLine(currentLine.key, { proteinId: p.id })} priceMode="extra" />
+            ))}
+          </div>
+        )}
+
+        {/* ---------- Acompanhamentos ---------- */}
+        {view.phase === "builder" && view.sub === "sides" && currentMeal && currentLine && (
+          <div className="space-y-3">
+            {currentMeal.included.length > 0 && (
+              <section className="rounded-2xl border border-ari-yellow/25 bg-ari-yellow/10 p-4">
+                <p className="text-xs font-bold uppercase tracking-wide text-ari-yellow">Já inclusos</p>
+                <ul className="mt-1.5 space-y-1">
+                  {currentMeal.included.map((i) => (
+                    <li key={i.id} className="flex items-center gap-2 font-bold">
+                      <span className="text-ari-yellow">✓</span>
+                      <span>{emojiFor(i.name)} {i.name}</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+            <div className={`rounded-2xl px-4 py-3 text-sm font-bold transition ${limitNotice ? "bg-ari-red text-white" : "bg-night-800 text-white/80"}`} role="status" aria-live="polite">
+              {limitNotice ?? `Você escolheu ${sidesCount} de ${maxChoices} acompanhamento${maxChoices === 1 ? "" : "s"}.`}
+            </div>
+            <p className="px-1 text-xs font-bold uppercase tracking-wide text-white/55">Escolha até {maxChoices}</p>
+            {currentMeal.choices.map((s) => {
+              const selected = currentLine.sideIds.includes(s.id);
+              const full = !selected && sidesCount >= maxChoices;
+              return <OptionRow key={s.id} item={s} selected={selected} dimmed={full} kind="check" onClick={() => toggleSide(s.id)} priceMode="extra" />;
+            })}
+          </div>
+        )}
+
+        {/* ---------- Adicionais ---------- */}
+        {view.phase === "builder" && view.sub === "extras" && currentMeal && currentLine && (
+          <div className="space-y-3">
+            <IncludedBlock meal={currentMeal} chosen={currentResolved?.chosen} protein={currentResolved?.protein ?? null} />
+            <p className="text-sm text-white/55">Opcional. Toque para adicionar quantos quiser.</p>
+            {menu.extras.map((e) => (
+              <OptionRow key={e.id} item={e} selected={currentLine.extraIds.includes(e.id)} kind="check" onClick={() => toggleExtra(e.id)} priceMode="extra" />
+            ))}
+          </div>
+        )}
+
+        {/* ---------- Observação do produto ---------- */}
+        {view.phase === "builder" && view.sub === "note" && currentMeal && currentLine && (
+          <div className="space-y-3">
+            <IncludedBlock meal={currentMeal} chosen={currentResolved?.chosen} protein={currentResolved?.protein ?? null} extras={currentResolved?.extras} />
+            <p className="text-sm text-white/55">Opcional. Ex.: sem cebola, sem tomate, bem passado...</p>
+            <textarea className="input-public min-h-32" placeholder="Digite uma observação para este item..." value={currentLine.note} maxLength={300} onChange={(e) => updateLine(currentLine.key, { note: e.target.value })} />
+            <div className="flex flex-wrap gap-2">
+              {NOTE_SUGGESTIONS.map((s) => (
+                <button key={s} type="button" onClick={() => appendNote(s)} className="min-h-10 rounded-full bg-night-800 px-3 text-sm font-bold text-white/80 active:scale-95">
+                  + {s}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ---------- Carrinho ---------- */}
+        {view.phase === "cart" && (
+          <div className="space-y-4">
+            {doneLines.length === 0 && drinksCount === 0 && <EmptyNotice text="Nenhum item no pedido ainda." />}
+            {doneLines.map((l, index) => (
+              <article key={l.key} className="rounded-3xl border border-night-800 bg-night-900 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    {doneLines.length > 1 && <p className="text-xs font-bold uppercase tracking-wide text-white/55">Item {index + 1}</p>}
+                    <p className="text-lg font-extrabold leading-tight">{emojiFor(l.meal.name, "🍽️")} {l.meal.name}</p>
+                  </div>
+                  <p className="shrink-0 font-extrabold text-ari-yellow">{formatBRL(l.price)}</p>
+                </div>
+                <div className="mt-3 space-y-2">
+                  {l.protein && <Detail label="Proteína" items={[`${l.protein.name}${l.protein.priceCents ? ` + ${formatBRL(l.protein.priceCents)}` : ""}`]} />}
+                  {l.included.length > 0 && <Detail label="Inclusos" items={l.included.map((i) => i.name)} />}
+                  {l.chosen.length > 0 && <Detail label="Escolhidos" items={l.chosen.map((i) => `${i.name}${i.priceCents ? ` + ${formatBRL(i.priceCents)}` : ""}`)} />}
+                  {l.extras.length > 0 && <Detail label={l.extras.length === 1 ? "Adicional" : "Adicionais"} items={l.extras.map((e) => `${e.name} + ${formatBRL(e.priceCents)}`)} />}
+                  {l.note && <Detail label="Observação" items={[l.note]} highlight />}
+                </div>
+                <div className="mt-4 grid grid-cols-3 gap-2">
+                  <button type="button" onClick={() => editLine(l)} className="min-h-11 rounded-xl bg-night-800 text-sm font-bold text-white active:scale-95">✏️ Editar</button>
+                  <button type="button" onClick={() => duplicateLine(l)} className="min-h-11 rounded-xl bg-night-800 text-sm font-bold text-white active:scale-95">＋ Repetir</button>
+                  <button type="button" onClick={() => removeLine(l.key)} className="min-h-11 rounded-xl bg-red-500/15 text-sm font-bold text-red-300 active:scale-95">🗑 Remover</button>
+                </div>
+              </article>
+            ))}
+            {menu.drinks.length > 0 && (
+              <div className="space-y-3">
+                <h2 className="px-1 pt-2 font-display text-sm uppercase tracking-wider text-ari-yellow">Bebidas</h2>
+                {config.drinkRequired && <p className="text-sm text-white/55">Escolha pelo menos uma bebida para continuar.</p>}
+                {menu.drinks.map((d) => (
+                  <DrinkRow key={d.id} item={d} qty={sel.drinkQty[String(d.id)] ?? 0} onQty={(q) => setDrinkQty(d.id, q)} />
+                ))}
+              </div>
+            )}
+            <button type="button" onClick={startNewMeal} className="btn-dark w-full !border-dashed">
+              ＋ Adicionar outro item
+            </button>
+            <Totals subtotal={order.subtotal} receivingMode={sel.receivingMode} />
+          </div>
+        )}
+
+        {/* ---------- Forma de recebimento ---------- */}
+        {view.phase === "receiving" && (
+          <div className="space-y-3">
+            {receivingOptions.length === 0 && <EmptyNotice text="O estabelecimento ainda não configurou como entrega os pedidos." />}
+            {receivingOptions.map((opt) => {
+              const selected = sel.receivingMode === opt.mode;
+              return (
+                <button key={opt.mode} type="button" onClick={() => update({ receivingMode: opt.mode })} className={`option-card ${selected ? "option-card-selected" : ""}`} aria-pressed={selected}>
+                  <Radio checked={selected} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-base font-extrabold leading-tight">{opt.emoji} {opt.label}</span>
+                    <span className="mt-0.5 block text-sm text-white/55">{opt.description}</span>
+                  </span>
+                </button>
+              );
+            })}
+            {receiving && receiving.mode !== "pickup" && (
+              <p className="rounded-2xl bg-night-800 px-4 py-3 text-sm text-white/80">
+                🛵 O valor da entrega não é cobrado aqui: ele é combinado pelo WhatsApp depois que você enviar o pedido.
+                {config.deliveryAreas && <> Atendemos: {config.deliveryAreas}.</>}
+              </p>
+            )}
+            {config.deliveryNotes && <p className="rounded-2xl bg-night-800 px-4 py-3 text-sm text-white/80">ℹ️ {config.deliveryNotes}</p>}
+          </div>
+        )}
+
+        {/* ---------- Dados do cliente / endereço ---------- */}
+        {view.phase === "contact" && (
+          <div className="space-y-4">
+            {receiving?.mode === "pickup" && (
+              <section className="rounded-2xl border border-ari-yellow/25 bg-ari-yellow/10 p-4 text-sm">
+                <p className="text-xs font-bold uppercase tracking-wide text-ari-yellow">🏪 Retirada no local</p>
+                {config.pickupAddress && <p className="mt-1 font-bold text-white">📍 {config.pickupAddress}</p>}
+                {config.pickupHours && <p className="text-white/80">🕐 {config.pickupHours}</p>}
+              </section>
+            )}
+            <p className="text-sm text-white/55">Sem cadastro — só o necessário para {receiving?.needsAddress ? "a entrega chegar até você" : "avisarmos quando estiver pronto"}.</p>
+            <Field label="Seu nome">
+              <input className="input-public" autoComplete="name" value={sel.customer.name} onChange={(e) => updateCustomer({ name: e.target.value })} placeholder="Como podemos te chamar?" />
+            </Field>
+            <Field label="Telefone (WhatsApp)">
+              <input className="input-public" type="tel" inputMode="tel" autoComplete="tel" value={sel.customer.phone} onChange={(e) => updateCustomer({ phone: formatPhone(e.target.value) })} placeholder="(11) 99999-9999" />
+            </Field>
+            {receiving?.needsAddress && (
+              <>
+                <div className="grid grid-cols-[1fr_6.5rem] gap-3">
+                  <Field label="Endereço (rua)">
+                    <input className="input-public" autoComplete="street-address" value={sel.customer.street} onChange={(e) => updateCustomer({ street: e.target.value })} placeholder="Rua, avenida..." />
+                  </Field>
+                  <Field label="Número">
+                    <input className="input-public" inputMode="numeric" value={sel.customer.number} onChange={(e) => updateCustomer({ number: e.target.value })} placeholder="123" />
+                  </Field>
+                </div>
+                <Field label="Complemento (opcional)">
+                  <input className="input-public" value={sel.customer.complement} onChange={(e) => updateCustomer({ complement: e.target.value })} placeholder="Apto, bloco, casa 2..." />
+                </Field>
+                <Field label="Bairro">
+                  <input className="input-public" autoComplete="address-level3" value={sel.customer.neighborhood} onChange={(e) => updateCustomer({ neighborhood: e.target.value })} placeholder="Seu bairro" />
+                </Field>
+                <Field label="Ponto de referência (opcional)">
+                  <input className="input-public" value={sel.customer.reference} onChange={(e) => updateCustomer({ reference: e.target.value })} placeholder="Perto do mercado, portão azul..." />
+                </Field>
+                <Field label="Observação para a entrega (opcional)">
+                  <input className="input-public" value={sel.customer.deliveryNote} onChange={(e) => updateCustomer({ deliveryNote: e.target.value })} placeholder="Tocar o interfone, deixar na portaria..." />
+                </Field>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ---------- Pagamento ---------- */}
+        {view.phase === "payment" && (
+          <div className="space-y-3">
+            {menu.payments.length === 0 && <EmptyNotice text="Nenhuma forma de pagamento configurada." />}
+            {menu.payments.map((p) => {
+              const selected = sel.paymentMethodId === p.id;
+              return (
+                <button key={p.id} type="button" onClick={() => update({ paymentMethodId: p.id, needsChange: null, changeFor: "" })} className={`option-card ${selected ? "option-card-selected" : ""}`} aria-pressed={selected}>
+                  <Radio checked={selected} />
+                  <span className="flex-1 text-base font-extrabold">{p.name}</span>
+                </button>
+              );
+            })}
+            {order.payment?.asksChange && (
+              <div className="mt-4 rounded-3xl border border-night-800 bg-night-900 p-4">
+                <p className="text-base font-extrabold">Precisa de troco?</p>
+                <div className="mt-3 grid grid-cols-2 gap-3">
+                  <button type="button" onClick={() => update({ needsChange: true })} className={`btn-dark ${sel.needsChange === true ? "!border-ari-red !bg-ari-red/15" : ""}`}>Sim</button>
+                  <button type="button" onClick={() => update({ needsChange: false, changeFor: "" })} className={`btn-dark ${sel.needsChange === false ? "!border-ari-red !bg-ari-red/15" : ""}`}>Não</button>
+                </div>
+                {sel.needsChange && (
+                  <div className="mt-4">
+                    <label className="label !text-ari-yellow">Troco para quanto?</label>
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg font-extrabold text-white/55">R$</span>
+                      <input className="input-public" inputMode="decimal" value={sel.changeFor} onChange={(e) => update({ changeFor: e.target.value })} placeholder="50,00" />
+                    </div>
+                    <p className="mt-1.5 text-xs text-white/55">
+                      Subtotal dos produtos: {formatBRL(order.subtotal)}.{receiving?.needsAddress ? " O valor da entrega será somado depois." : ""}
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ---------- Observações do pedido ---------- */}
+        {view.phase === "notes" && (
+          <div className="space-y-3">
+            <p className="text-sm text-white/55">Opcional. Vale para o pedido todo. Ex.: molho à parte, sem pimenta, deixar na portaria...</p>
+            <textarea className="input-public min-h-36" placeholder="Digite uma observação para este pedido..." value={sel.note} maxLength={400} onChange={(e) => update({ note: e.target.value })} />
+            {doneLines.some((l) => l.note) && (
+              <p className="rounded-2xl bg-night-800 px-4 py-3 text-sm text-white/80">
+                ✅ As observações de cada item ({doneLines.filter((l) => l.note).length}) já estão salvas e vão junto no pedido.
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* ---------- Revisão ---------- */}
+        {view.phase === "review" && (
+          <div className="space-y-4">
+            {order.groups.map((g, index) => {
+              const l = g.line;
+              return (
+                <div key={g.keys.join("-")} className="rounded-3xl border border-night-800 bg-night-900 p-5">
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="text-base font-extrabold">
+                      {order.groups.length > 1 ? `${index + 1}. ` : ""}{g.qty}x {emojiFor(l.meal.name, "🍽️")} {l.meal.name}
+                    </p>
+                    <p className="shrink-0 font-extrabold text-ari-yellow">{formatBRL(l.price * g.qty)}</p>
+                  </div>
+                  <div className="mt-2 space-y-2">
+                    {l.protein && <Detail label="Proteína" items={[`${emojiFor(l.protein.name)} ${l.protein.name}${l.protein.priceCents ? ` + ${formatBRL(l.protein.priceCents)}` : ""}`]} />}
+                    {l.included.length > 0 && <Detail label="Inclusos" items={l.included.map((i) => `${emojiFor(i.name)} ${i.name}`)} />}
+                    {l.chosen.length > 0 && <Detail label="Escolhidos" items={l.chosen.map((i) => `${emojiFor(i.name)} ${i.name}`)} />}
+                    {l.extras.length > 0 && <Detail label={l.extras.length === 1 ? "Adicional" : "Adicionais"} items={l.extras.map((e) => `${emojiFor(e.name, "➕")} ${e.name} + ${formatBRL(e.priceCents)}${g.qty > 1 ? " (cada)" : ""}`)} />}
+                    {l.note && <Detail label="📝 Observação" items={[l.note]} highlight />}
+                  </div>
+                </div>
+              );
+            })}
+            <div className="rounded-3xl border border-night-800 bg-night-900 p-5">
+              <p className="text-xs font-bold uppercase tracking-wide text-white/55">Bebida</p>
+              {order.drinks.length ? (
+                <ul className="mt-1 space-y-1 font-bold">
+                  {order.drinks.map((d) => (
+                    <li key={d.item.id} className="flex justify-between gap-3">
+                      <span>{emojiFor(d.item.name, "🥤")} {d.qty}x {d.item.name}</span>
+                      <span className="text-white/80">{formatBRL(d.item.priceCents * d.qty)}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-1 font-bold">🚫 Sem bebida</p>
+              )}
+              {order.note && (
+                <div className="mt-3">
+                  <Detail label="📝 Observação do pedido" items={[order.note]} highlight />
+                </div>
+              )}
+              <div className="mt-3 flex gap-4">
+                <button type="button" onClick={() => setView({ phase: "cart" })} className="text-sm font-bold text-ari-yellow underline">Editar pedido</button>
+                <button type="button" onClick={() => setView({ phase: "notes" })} className="text-sm font-bold text-ari-yellow underline">Editar observação</button>
+              </div>
+            </div>
+
+            <div className="rounded-3xl border border-night-800 bg-night-900 p-5">
+              <p className="text-xs font-bold uppercase tracking-wide text-white/55">Recebimento</p>
+              <p className="mt-1 font-bold">{receiving?.emoji} {receiving?.label}</p>
+              <p className="mt-2 font-bold">{sel.customer.name} · {sel.customer.phone}</p>
+              {receiving?.needsAddress ? (
+                <>
+                  <p className="text-white/80">
+                    {sel.customer.street}, {sel.customer.number}
+                    {sel.customer.complement ? ` — ${sel.customer.complement}` : ""}
+                  </p>
+                  <p className="text-white/80">{sel.customer.neighborhood}</p>
+                  {sel.customer.reference && <p className="text-sm text-white/55">Ref.: {sel.customer.reference}</p>}
+                  {sel.customer.deliveryNote && <p className="text-sm text-white/55">Obs.: {sel.customer.deliveryNote}</p>}
+                </>
+              ) : (
+                <>
+                  {config.pickupAddress && <p className="text-white/80">📍 {config.pickupAddress}</p>}
+                  {config.pickupHours && <p className="text-sm text-white/55">🕐 {config.pickupHours}</p>}
+                </>
+              )}
+              <div className="mt-2 flex gap-4">
+                <button type="button" onClick={() => setView({ phase: "receiving" })} className="text-sm font-bold text-ari-yellow underline">Trocar recebimento</button>
+                <button type="button" onClick={() => setView({ phase: "contact" })} className="text-sm font-bold text-ari-yellow underline">Editar dados</button>
+              </div>
+            </div>
+
+            <div className="rounded-3xl border border-night-800 bg-night-900 p-5">
+              <p className="text-xs font-bold uppercase tracking-wide text-white/55">Pagamento</p>
+              <p className="mt-1 font-bold">{order.payment?.name}</p>
+              {order.payment?.asksChange && <p className="text-white/80">{sel.needsChange ? `Troco para ${changeForLabel(sel.changeFor)}` : "Não precisa de troco"}</p>}
+              <button type="button" onClick={() => setView({ phase: "payment" })} className="mt-2 text-sm font-bold text-ari-yellow underline">Editar pagamento</button>
+            </div>
+
+            <Totals subtotal={order.subtotal} receivingMode={sel.receivingMode} />
+
+            <p className="text-center text-sm text-white/80">
+              Ao tocar no botão, o WhatsApp abre com o pedido preenchido — você confere e envia.
+              {receiving?.needsAddress ? " O estabelecimento confirma com você o valor da entrega e o total final." : ""}
+            </p>
+            {!isValidWhatsApp(config.whatsappNumber) && (
+              <p className="rounded-2xl bg-red-500/15 px-4 py-3 text-sm font-bold text-red-300">O número de WhatsApp ainda não foi configurado no painel.</p>
+            )}
+            <button type="button" onClick={copyMessage} className="w-full text-center text-sm font-bold text-white/55 underline">
+              {copied ? "Pedido copiado ✅" : "Copiar pedido em texto"}
+            </button>
+          </div>
+        )}
+      </main>
+
+      {/* Barra inferior fixa com subtotal e ação principal */}
+      <footer className="fixed inset-x-0 bottom-0 z-20 mx-auto w-full max-w-md border-t border-night-800 bg-night-900/95 px-4 pt-3 backdrop-blur safe-bottom sm:sticky sm:rounded-b-[2rem]">
+        {error && (
+          <p role="alert" className="mb-2 rounded-xl bg-red-500/15 px-3 py-2 text-sm font-bold text-red-300">{error}</p>
+        )}
+        <div className="flex items-center gap-3">
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-bold uppercase tracking-wide text-white/55">Subtotal</p>
+            <p className="text-2xl font-extrabold leading-none">{formatBRL(view.phase === "builder" ? order.runningSubtotal : order.subtotal)}</p>
+            <p className="mt-0.5 text-[11px] leading-tight text-white/55">{footerHint}</p>
+          </div>
+          {view.phase === "review" ? (
+            <a
+              href={waLink}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={logOrder}
+              className="btn-cta flex-1"
+            >
+              Enviar pedido pelo WhatsApp
+            </a>
+          ) : (
+            <button type="button" onClick={next} className="btn-cta flex-1">{primaryLabel}</button>
+          )}
+        </div>
+      </footer>
+    </div>
+  );
+}
+
+/* ---------- Componentes auxiliares ---------- */
+
+function IncludedBlock({ meal, protein, chosen, extras }: { meal: PublicMeal; protein?: MenuItem | null; chosen?: MenuItem[]; extras?: MenuItem[] }) {
+  // O produto escolhido vem primeiro, depois proteína, inclusos e adicionais
+  const parts: string[] = [`${emojiFor(meal.name, "🍔")} ${meal.name}`];
+  if (protein) parts.push(`${emojiFor(protein.name)} ${protein.name}`);
+  meal.included.forEach((i) => parts.push(`${emojiFor(i.name)} ${i.name}`));
+  chosen?.forEach((i) => parts.push(`${emojiFor(i.name)} ${i.name}`));
+  extras?.forEach((i) => parts.push(`${emojiFor(i.name, "➕")} ${i.name}`));
+  if (parts.length === 0) return null;
+  return (
+    <section className="rounded-2xl border border-ari-yellow/25 bg-ari-yellow/10 px-4 py-3">
+      <p className="text-xs font-bold uppercase tracking-wide text-ari-yellow">Seu item até agora</p>
+      <p className="mt-1 text-sm font-bold text-white">{parts.join(" · ")}</p>
+    </section>
+  );
+}
+
+function Detail({ label, items, highlight }: { label: string; items: string[]; highlight?: boolean }) {
+  return (
+    <div className={highlight ? "rounded-xl bg-night-800 px-3 py-2" : ""}>
+      <p className="text-xs font-bold uppercase tracking-wide text-white/55">{label}</p>
+      <p className="text-sm font-semibold text-white">{items.join(highlight ? " " : ", ")}</p>
+    </div>
+  );
+}
+
+function Radio({ checked }: { checked: boolean }) {
+  return (
+    <span aria-hidden className={`grid h-7 w-7 shrink-0 place-items-center rounded-full border-2 ${checked ? "border-ari-red bg-ari-red" : "border-night-700 bg-night-800"}`}>
+      {checked && <span className="h-3 w-3 rounded-full bg-white" />}
+    </span>
+  );
+}
+
+function Check({ checked }: { checked: boolean }) {
+  return (
+    <span aria-hidden className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg border-2 text-base font-extrabold text-white ${checked ? "border-ari-red bg-ari-red" : "border-night-700 bg-night-800"}`}>
+      {checked ? "✓" : ""}
+    </span>
+  );
+}
+
+function OptionRow({ item, selected, dimmed, kind, onClick, priceMode }: { item: MenuItem; selected: boolean; dimmed?: boolean; kind: "check" | "radio"; onClick: () => void; priceMode: "extra" | "full" }) {
+  return (
+    <button type="button" onClick={onClick} aria-pressed={selected} className={`option-card ${selected ? "option-card-selected" : ""} ${dimmed ? "opacity-60" : ""}`}>
+      {kind === "check" ? <Check checked={selected} /> : <Radio checked={selected} />}
+      {item.imageUrl && <img src={item.imageUrl} alt="" className="h-16 w-16 shrink-0 rounded-xl object-cover" loading="lazy" />}
+      <span className="min-w-0 flex-1">
+        <span className="block text-base font-extrabold leading-tight">{item.name}</span>
+        {item.description && <span className="mt-0.5 block text-sm text-white/55">{item.description}</span>}
+      </span>
+      {item.priceCents > 0 && <span className="shrink-0 text-sm font-extrabold text-ari-yellow">{priceMode === "extra" ? `+ ${formatBRL(item.priceCents)}` : formatBRL(item.priceCents)}</span>}
+    </button>
+  );
+}
+
+/** Linha de bebida com contador — usada no menu e no carrinho (a bebida pode ser comprada sozinha). */
+function DrinkRow({ item, qty, onQty }: { item: MenuItem; qty: number; onQty: (qty: number) => void }) {
+  return (
+    <div className={`option-card ${qty > 0 ? "option-card-selected" : ""}`}>
+      {item.imageUrl && <img src={item.imageUrl} alt="" className="h-16 w-16 shrink-0 rounded-xl object-cover" loading="lazy" />}
+      <span className="min-w-0 flex-1">
+        <span className="block text-base font-extrabold leading-tight">{item.name}</span>
+        {item.description && <span className="mt-0.5 block text-sm text-white/55">{item.description}</span>}
+        <span className="mt-0.5 block text-sm font-extrabold text-ari-yellow">{formatBRL(item.priceCents)}</span>
+      </span>
+      <span className="flex shrink-0 items-center gap-1.5">
+        <button type="button" aria-label={`Menos ${item.name}`} onClick={() => onQty(qty - 1)} disabled={qty === 0} className="grid h-11 w-11 place-items-center rounded-full border-2 border-night-700 bg-night-800 text-xl font-extrabold text-white disabled:opacity-30">−</button>
+        <span className="w-6 text-center text-lg font-extrabold">{qty}</span>
+        <button type="button" aria-label={`Mais ${item.name}`} onClick={() => onQty(qty + 1)} className="grid h-11 w-11 place-items-center rounded-full bg-ari-red text-xl font-extrabold text-white">+</button>
+      </span>
+    </div>
+  );
+}
+
+function EmptyNotice({ text }: { text: string }) {
+  return <p className="rounded-2xl border-2 border-dashed border-night-700 p-5 text-center text-white/55">{text}</p>;
+}
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="block">
+      <span className="label !text-ari-yellow">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+/** Bloco de valores. O sistema mostra apenas o subtotal; a taxa de entrega (quando há) é combinada pelo WhatsApp. */
+function Totals({ subtotal, receivingMode }: { subtotal: number; receivingMode: ReceivingMode | null }) {
+  const pickup = receivingMode === "pickup";
+  return (
+    <section className="rounded-3xl border border-ari-yellow/25 bg-night-900 p-5 text-white">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-base font-extrabold">Subtotal</span>
+        <span className="text-2xl font-extrabold text-ari-yellow">{formatBRL(subtotal)}</span>
+      </div>
+      <div className="mt-2 flex items-baseline justify-between gap-3 text-sm">
+        <span className="font-bold">Entrega</span>
+        <span className="text-right">{pickup ? "retirada no local · sem taxa" : "consultar pelo WhatsApp"}</span>
+      </div>
+      <div className="my-3 border-t border-dashed border-white/15" />
+      {pickup ? (
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="text-base font-extrabold">Total</span>
+          <span className="text-xl font-extrabold text-ari-yellow">{formatBRL(subtotal)}</span>
+        </div>
+      ) : (
+        <p className="text-sm text-white/85">
+          <span className="font-extrabold text-white">Total final:</span> confirmado após consulta da entrega
+        </p>
+      )}
+    </section>
+  );
+}

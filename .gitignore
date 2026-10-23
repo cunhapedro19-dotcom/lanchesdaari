@@ -1,0 +1,23 @@
+# Dependências e build
+node_modules/
+.next/
+out/
+
+# Ambiente — o .env real NUNCA vai para o git (só o .env.example)
+.env
+.env.*
+!.env.example
+
+# Vários
+next-env.d.ts
+*.tsbuildinfo
+.DS_Store
+npm-debug.log*
+.vercel
+
+# Credenciais/backups locais nunca vão pro repositório (a DATABASE_URL tem a senha do banco)
+database*.txt
+
+# Arquivos antigos da Mary Delivery (sobraram da cópia — pode apagar da pasta quando quiser)
+logo-mary.jpg
+previa-icones.png

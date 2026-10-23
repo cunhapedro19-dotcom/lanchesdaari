@@ -1,0 +1,32 @@
+import type { Metadata, Viewport } from "next";
+import type { ReactNode } from "react";
+import { Anton } from "next/font/google";
+import "./globals.css";
+
+/* Fonte de display do cardápio (títulos grandes, estilo do cardápio físico) */
+const anton = Anton({ weight: "400", subsets: ["latin"], variable: "--font-anton" });
+
+export const dynamic = "force-dynamic";
+
+export const metadata: Metadata = {
+  title: { default: "Lanches da Ari — Cardápio", template: "%s" },
+  description: "Delivery de lanches: monte seu pedido e envie pelo WhatsApp.",
+  // App do cardápio no iPhone (Android usa o manifest); o painel tem o dele no admin/layout.tsx
+  appleWebApp: { capable: true, title: "Lanches da Ari", statusBarStyle: "black-translucent" },
+  icons: { apple: "/icons/apple-touch-icon.png" },
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#000000",
+};
+
+export default function RootLayout({ children }: { children: ReactNode }) {
+  return (
+    <html lang="pt-BR" className={anton.variable}>
+      <body className="bg-night-950 font-sans text-white antialiased">{children}</body>
+    </html>
+  );
+}
