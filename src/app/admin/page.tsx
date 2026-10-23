@@ -36,7 +36,7 @@ export default async function AdminHomePage() {
     <main className="pt-6">
       <div className="mb-5 flex items-center gap-3">
         {est.logoUrl ? (
-          <img src={est.logoUrl} alt="" className="h-12 w-12 rounded-2xl bg-night-900 object-contain p-0.5 shadow-sm" />
+          <img src={est.logoUrl} alt="" className="h-12 w-12 rounded-2xl bg-ari-red object-contain p-1.5 shadow-sm" />
         ) : (
           <span className="grid h-12 w-12 place-items-center rounded-2xl bg-white text-2xl shadow-sm">{est.emoji}</span>
         )}

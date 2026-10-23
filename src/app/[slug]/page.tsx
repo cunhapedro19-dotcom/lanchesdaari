@@ -41,7 +41,7 @@ export default async function EstablishmentHomePage({ params }: Props) {
             <div className="absolute inset-x-0 bottom-0 p-6 text-white">
               <div className="flex items-end gap-3">
                 {config.logoUrl && (
-                  <img src={config.logoUrl} alt={config.name} className="h-16 w-16 shrink-0 rounded-2xl border-2 border-ari-red/60 bg-night-900 object-contain p-0.5 shadow-md" />
+                  <img src={config.logoUrl} alt={config.name} className="h-16 w-16 shrink-0 rounded-2xl bg-ari-red object-contain p-1.5 shadow-md" />
                 )}
                 <div>
                   <h1 className="font-display text-4xl uppercase leading-[0.95]">
@@ -63,7 +63,7 @@ export default async function EstablishmentHomePage({ params }: Props) {
                   <img
                     src={config.logoUrl}
                     alt={config.name}
-                    className="mx-auto w-72 max-w-full drop-shadow-[0_0_28px_rgba(255,209,0,0.22)]"
+                    className="mx-auto w-72 max-w-full rounded-[2rem] bg-ari-red p-5 drop-shadow-[0_0_28px_rgba(255,209,0,0.22)]"
                     fetchPriority="high"
                   />
                 </h1>
