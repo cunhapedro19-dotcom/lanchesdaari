@@ -21,10 +21,12 @@ dados/endereço → pagamento → observações → revisão → enviar pelo Wha
 
 O cardápio real do panfleto vem pronto no sistema, com preços:
 
-- **Lanches**: Cachorro de salsicha (R$ 7,00) e Cachorro de linguiça (R$ 10,00) — o
-  cliente escolhe os **complementos** (milho, ervilha, bacon, calabresa, ovo de codorna,
+- **Lanches**: Cachorro de salsicha (R$ 7,00), Cachorro de linguiça (R$ 10,00) e
+  Cachorro de Linguiça + Guaracamp (R$ 10,00, com Guaracamp inclusa) — o cliente
+  escolhe os **complementos** (milho, ervilha, bacon, calabresa, ovo de codorna,
   presunto, queijo ralado, passas, azeitona, batata palha) e os **molhos** (ketchup,
-  maionese, mostarda, maionese temperada) na hora de montar, sem custo extra.
+  maionese, mostarda e maionese temperada de graça; molho de alho por R$ 0,50) na
+  hora de montar, todos os que quiser, sem limite.
 - **Batatas Fritas**: simples (R$ 8,00), média (R$ 15,00), grande completa (R$ 20,00)
   e Batata Maluca média (R$ 17,50).
 - **Combos**: Fome Zero (R$ 15,00), Combo 1 — cachorro de salsicha ou linguiça à

@@ -4,9 +4,9 @@
 -- Como usar: Supabase → SQL Editor → New query → cole TUDO daqui → Run.
 --
 -- O que ele faz:
---   1) Atualiza a frase do negócio;
+--   1) Atualiza a frase e a logo do negócio;
 --   2) Apaga o cardápio atual da Lanches da Ari (produtos, complementos e bebidas);
---   3) Insere o cardápio real: 13 produtos + 14 complementos/molhos + 2 proteínas
+--   3) Insere o cardápio real: 14 produtos + 15 complementos/molhos + 2 proteínas
 --      + 1 bebida, com os vínculos de composição (escolhas, inclusos e proteína).
 --
 -- Pode rodar de novo sem duplicar: ele substitui o cardápio atual por este.
@@ -37,8 +37,8 @@ delete from meals
 delete from menu_items
   where establishment_id = (select id from establishments where slug = 'lanches-da-ari');
 
--- 3) Complementos do lanche + molhos (grátis, o cliente escolhe ao montar),
---    proteínas do Combo 1 e bebidas
+-- 3) Complementos do lanche + molhos (de graça, o cliente escolhe sem limite;
+--    só o molho de alho custa R$ 0,50), proteínas do Combo 1 e bebidas
 insert into menu_items (establishment_id, category, name, price_cents, sort_order)
 select e.id, x.category, x.name, x.price, x.ord
 from establishments e, (values
@@ -56,6 +56,7 @@ from establishments e, (values
   ('side',   'Maionese',             0, 12),
   ('side',   'Mostarda',             0, 13),
   ('side',   'Maionese temperada',   0, 14),
+  ('side',   'Molho de alho',       50, 15),
   ('protein', 'Salsicha',            0, 1),
   ('protein', 'Linguiça',            0, 2),
   ('drink',  'Guaracamp',          250, 1)
@@ -63,29 +64,30 @@ from establishments e, (values
 where e.slug = 'lanches-da-ari';
 
 -- 4) Produtos do cardápio real, agrupados pelas seções do panfleto
---    (max_choices 0 = produto simples; 14 = os complementos/molhos todos à escolha)
+--    (max_choices 0 = produto simples; N = todos os acompanhamentos/molhos à escolha)
 insert into meals (establishment_id, name, category, description, price_cents,
                    sort_order, max_choices, allow_extras, allow_notes)
 select e.id, m.name, m.category, m.description, m.price,
        m.ord, m.maxchoices, true, true
 from establishments e, (values
   -- LANCHES
-  ('Cachorro de salsicha', 'Lanches', 'Pão, salsicha e complementos à escolha.',        700,  1, 14),
-  ('Cachorro de linguiça', 'Lanches', 'Pão, linguiça e complementos à escolha.',       1000,  2, 14),
+  ('Cachorro de salsicha',              'Lanches', 'Pão, salsicha e complementos à escolha.',                    700,  1, 15),
+  ('Cachorro de linguiça',              'Lanches', 'Pão, linguiça e complementos à escolha.',                   1000,  2, 15),
+  ('Cachorro de Linguiça + Guaracamp',  'Lanches', 'Pão, linguiça, complementos à escolha e 1 Guaracamp incluso.', 1000, 3, 15),
   -- BATATAS FRITAS
-  ('Batata simples',          'Batatas Fritas', '',  800, 3, 0),
-  ('Batata média',            'Batatas Fritas', '', 1500, 4, 0),
-  ('Batata grande completa',  'Batatas Fritas', '', 2000, 5, 0),
-  ('Batata Maluca média',     'Batatas Fritas', '', 1750, 6, 0),
+  ('Batata simples',          'Batatas Fritas', '',  800, 4, 0),
+  ('Batata média',            'Batatas Fritas', '', 1500, 5, 0),
+  ('Batata grande completa',  'Batatas Fritas', '', 2000, 6, 0),
+  ('Batata Maluca média',     'Batatas Fritas', '', 1750, 7, 0),
   -- COMBOS
-  ('Combo Fome Zero', 'Combos', '1 cachorro-quente de salsicha + 1 batata frita simples + 1 Guaracamp + 1 maionese temperada.', 1500, 7, 13),
-  ('Combo 1',         'Combos', '1 cachorro-quente de salsicha ou linguiça + 1 Guaracamp.',                                     1000, 8, 14),
-  ('Combo 2',         'Combos', '1 Batata Maluca média + 1 Guaracamp.',                                                         1750, 9, 0),
+  ('Combo Fome Zero', 'Combos', '1 cachorro-quente de salsicha + 1 batata frita simples + 1 Guaracamp + 1 maionese temperada.', 1500, 8, 14),
+  ('Combo 1',         'Combos', '1 cachorro-quente de salsicha ou linguiça + 1 Guaracamp.',                                     1000, 9, 15),
+  ('Combo 2',         'Combos', '1 Batata Maluca média + 1 Guaracamp.',                                                         1750, 10, 0),
   -- SOBREMESAS
-  ('Brigadeiro',                    'Sobremesas', '',                               200, 10, 0),
-  ('Mousse (Morango ou Maracujá)',  'Sobremesas', 'Diga o sabor na observação.',    400, 11, 0),
-  ('Trufas (sabores diversos)',     'Sobremesas', 'Diga o sabor na observação.',    500, 12, 0),
-  ('Pudim',                         'Sobremesas', '',                               600, 13, 0)
+  ('Brigadeiro',                    'Sobremesas', '',                               200, 11, 0),
+  ('Mousse (Morango ou Maracujá)',  'Sobremesas', 'Diga o sabor na observação.',    400, 12, 0),
+  ('Trufas (sabores diversos)',     'Sobremesas', 'Diga o sabor na observação.',    500, 13, 0),
+  ('Pudim',                         'Sobremesas', '',                               600, 14, 0)
 ) as m(name, category, description, price, ord, maxchoices)
 where e.slug = 'lanches-da-ari';
 
@@ -111,6 +113,7 @@ with
       ('Cachorro de salsicha', 'Maionese',           'choice'),
       ('Cachorro de salsicha', 'Mostarda',           'choice'),
       ('Cachorro de salsicha', 'Maionese temperada', 'choice'),
+      ('Cachorro de salsicha', 'Molho de alho',      'choice'),
       ('Cachorro de linguiça', 'Milho',              'choice'),
       ('Cachorro de linguiça', 'Ervilha',            'choice'),
       ('Cachorro de linguiça', 'Batata palha',       'choice'),
@@ -125,6 +128,23 @@ with
       ('Cachorro de linguiça', 'Maionese',           'choice'),
       ('Cachorro de linguiça', 'Mostarda',           'choice'),
       ('Cachorro de linguiça', 'Maionese temperada', 'choice'),
+      ('Cachorro de linguiça', 'Molho de alho',      'choice'),
+      ('Cachorro de Linguiça + Guaracamp', 'Milho',              'choice'),
+      ('Cachorro de Linguiça + Guaracamp', 'Ervilha',            'choice'),
+      ('Cachorro de Linguiça + Guaracamp', 'Batata palha',       'choice'),
+      ('Cachorro de Linguiça + Guaracamp', 'Bacon',              'choice'),
+      ('Cachorro de Linguiça + Guaracamp', 'Calabresa',          'choice'),
+      ('Cachorro de Linguiça + Guaracamp', 'Ovo de codorna',     'choice'),
+      ('Cachorro de Linguiça + Guaracamp', 'Presunto',           'choice'),
+      ('Cachorro de Linguiça + Guaracamp', 'Queijo ralado',      'choice'),
+      ('Cachorro de Linguiça + Guaracamp', 'Passas',             'choice'),
+      ('Cachorro de Linguiça + Guaracamp', 'Azeitona',           'choice'),
+      ('Cachorro de Linguiça + Guaracamp', 'Ketchup',            'choice'),
+      ('Cachorro de Linguiça + Guaracamp', 'Maionese',           'choice'),
+      ('Cachorro de Linguiça + Guaracamp', 'Mostarda',           'choice'),
+      ('Cachorro de Linguiça + Guaracamp', 'Maionese temperada', 'choice'),
+      ('Cachorro de Linguiça + Guaracamp', 'Molho de alho',      'choice'),
+      ('Cachorro de Linguiça + Guaracamp', 'Guaracamp',          'included'),
       ('Combo Fome Zero',      'Milho',              'choice'),
       ('Combo Fome Zero',      'Ervilha',            'choice'),
       ('Combo Fome Zero',      'Batata palha',       'choice'),
@@ -138,7 +158,9 @@ with
       ('Combo Fome Zero',      'Ketchup',            'choice'),
       ('Combo Fome Zero',      'Maionese',           'choice'),
       ('Combo Fome Zero',      'Mostarda',           'choice'),
+      ('Combo Fome Zero',      'Molho de alho',      'choice'),
       ('Combo Fome Zero',      'Guaracamp',          'included'),
+      ('Combo Fome Zero',      'Maionese temperada', 'included'),
       ('Combo 1',              'Salsicha',           'protein'),
       ('Combo 1',              'Linguiça',           'protein'),
       ('Combo 1',              'Milho',              'choice'),
@@ -155,6 +177,7 @@ with
       ('Combo 1',              'Maionese',           'choice'),
       ('Combo 1',              'Mostarda',           'choice'),
       ('Combo 1',              'Maionese temperada', 'choice'),
+      ('Combo 1',              'Molho de alho',      'choice'),
       ('Combo 1',              'Guaracamp',          'included'),
       ('Combo 2',              'Guaracamp',          'included')
     ) as v(produto, item, role)
@@ -166,13 +189,13 @@ select meal_id, item_id, role from vinculos;
 
 commit;
 
--- Confere o resultado: deve listar os 13 produtos com os preços
-select category, name, price_cents / 100.0 as preco
+-- Confere o resultado: deve listar os 14 produtos com os preços
+select category, name, price_cents / 100.0 as preco, max_choices
 from meals
 where establishment_id = (select id from establishments where slug = 'lanches-da-ari')
-order by category, sort_order;
+order by sort_order;
 
--- ...e os 17 complementos + proteínas + bebidas
+-- ...e os 18 complementos + proteínas + bebidas
 select category, name, price_cents / 100.0 as preco
 from menu_items
 where establishment_id = (select id from establishments where slug = 'lanches-da-ari')

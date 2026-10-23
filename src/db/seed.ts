@@ -133,8 +133,9 @@ export async function createEstablishment(executor: Executor, input: NewEstablis
  * Cardápio REAL da Ari, lido do panfleto da casa:
  * lanches, batatas fritas, combos, sobremesas, bebida, complementos e molhos.
  *
- * Preços em centavos. Os complementos e molhos são gratuitos (o cliente escolhe
- * na hora de montar o lanche); a Guaracamp entra inclusa nos combos.
+ * Preços em centavos. Complementos e molhos são de graça e o cliente escolhe
+ * todos os que quiser, sem limite — só o molho de alho custa R$ 0,50.
+ * A Guaracamp entra inclusa nos combos e no Cachorro de Linguiça + Guaracamp.
  * Para regravar esse cardápio num banco que já está no ar, use supabase/cardapio-real.sql.
  */
 async function seedMenuAri(executor: Executor, establishmentId: number) {
@@ -158,6 +159,7 @@ async function seedMenuAri(executor: Executor, establishmentId: number) {
       { establishmentId, category: "side", name: "Maionese", priceCents: 0, sortOrder: 12 },
       { establishmentId, category: "side", name: "Mostarda", priceCents: 0, sortOrder: 13 },
       { establishmentId, category: "side", name: "Maionese temperada", priceCents: 0, sortOrder: 14 },
+      { establishmentId, category: "side", name: "Molho de alho", priceCents: 50, sortOrder: 15 },
       // Proteínas (escolha do Combo 1: salsicha ou linguiça)
       { establishmentId, category: "protein", name: "Salsicha", priceCents: 0, sortOrder: 1 },
       { establishmentId, category: "protein", name: "Linguiça", priceCents: 0, sortOrder: 2 },
@@ -179,29 +181,32 @@ async function seedMenuAri(executor: Executor, establishmentId: number) {
   const createdMeals = await executor
     .insert(meals)
     .values([
-      // Lanches — o cliente escolhe os complementos e molhos na montagem
+      // Lanches — o cliente escolhe complementos e molhos sem limite (o máximo
+      // é a própria quantidade de opções); Guaracamp inclusa quando o nome diz
       { establishmentId, name: "Cachorro de salsicha", category: "Lanches", description: "Pão, salsicha e complementos à escolha.", priceCents: 700, sortOrder: 1, maxChoices: complementos.length },
       { establishmentId, name: "Cachorro de linguiça", category: "Lanches", description: "Pão, linguiça e complementos à escolha.", priceCents: 1000, sortOrder: 2, maxChoices: complementos.length },
+      { establishmentId, name: "Cachorro de Linguiça + Guaracamp", category: "Lanches", description: "Pão, linguiça, complementos à escolha e 1 Guaracamp incluso.", priceCents: 1000, sortOrder: 3, maxChoices: complementos.length },
       // Batatas fritas
-      { establishmentId, name: "Batata simples", category: "Batatas Fritas", description: "", priceCents: 800, sortOrder: 3, maxChoices: 0 },
-      { establishmentId, name: "Batata média", category: "Batatas Fritas", description: "", priceCents: 1500, sortOrder: 4, maxChoices: 0 },
-      { establishmentId, name: "Batata grande completa", category: "Batatas Fritas", description: "", priceCents: 2000, sortOrder: 5, maxChoices: 0 },
-      { establishmentId, name: "Batata Maluca média", category: "Batatas Fritas", description: "", priceCents: 1750, sortOrder: 6, maxChoices: 0 },
+      { establishmentId, name: "Batata simples", category: "Batatas Fritas", description: "", priceCents: 800, sortOrder: 4, maxChoices: 0 },
+      { establishmentId, name: "Batata média", category: "Batatas Fritas", description: "", priceCents: 1500, sortOrder: 5, maxChoices: 0 },
+      { establishmentId, name: "Batata grande completa", category: "Batatas Fritas", description: "", priceCents: 2000, sortOrder: 6, maxChoices: 0 },
+      { establishmentId, name: "Batata Maluca média", category: "Batatas Fritas", description: "", priceCents: 1750, sortOrder: 7, maxChoices: 0 },
       // Combos
-      { establishmentId, name: "Combo Fome Zero", category: "Combos", description: "1 cachorro-quente de salsicha + 1 batata frita simples + 1 Guaracamp + 1 maionese temperada.", priceCents: 1500, sortOrder: 7, maxChoices: escolhasFomeZero.length },
-      { establishmentId, name: "Combo 1", category: "Combos", description: "1 cachorro-quente de salsicha ou linguiça + 1 Guaracamp.", priceCents: 1000, sortOrder: 8, maxChoices: complementos.length },
-      { establishmentId, name: "Combo 2", category: "Combos", description: "1 Batata Maluca média + 1 Guaracamp.", priceCents: 1750, sortOrder: 9, maxChoices: 0 },
+      { establishmentId, name: "Combo Fome Zero", category: "Combos", description: "1 cachorro-quente de salsicha + 1 batata frita simples + 1 Guaracamp + 1 maionese temperada.", priceCents: 1500, sortOrder: 8, maxChoices: escolhasFomeZero.length },
+      { establishmentId, name: "Combo 1", category: "Combos", description: "1 cachorro-quente de salsicha ou linguiça + 1 Guaracamp.", priceCents: 1000, sortOrder: 9, maxChoices: complementos.length },
+      { establishmentId, name: "Combo 2", category: "Combos", description: "1 Batata Maluca média + 1 Guaracamp.", priceCents: 1750, sortOrder: 10, maxChoices: 0 },
       // Sobremesas
-      { establishmentId, name: "Brigadeiro", category: "Sobremesas", description: "", priceCents: 200, sortOrder: 10, maxChoices: 0 },
-      { establishmentId, name: "Mousse (Morango ou Maracujá)", category: "Sobremesas", description: "Diga o sabor na observação.", priceCents: 400, sortOrder: 11, maxChoices: 0 },
-      { establishmentId, name: "Trufas (sabores diversos)", category: "Sobremesas", description: "Diga o sabor na observação.", priceCents: 500, sortOrder: 12, maxChoices: 0 },
-      { establishmentId, name: "Pudim", category: "Sobremesas", description: "", priceCents: 600, sortOrder: 13, maxChoices: 0 },
+      { establishmentId, name: "Brigadeiro", category: "Sobremesas", description: "", priceCents: 200, sortOrder: 11, maxChoices: 0 },
+      { establishmentId, name: "Mousse (Morango ou Maracujá)", category: "Sobremesas", description: "Diga o sabor na observação.", priceCents: 400, sortOrder: 12, maxChoices: 0 },
+      { establishmentId, name: "Trufas (sabores diversos)", category: "Sobremesas", description: "Diga o sabor na observação.", priceCents: 500, sortOrder: 13, maxChoices: 0 },
+      { establishmentId, name: "Pudim", category: "Sobremesas", description: "", priceCents: 600, sortOrder: 14, maxChoices: 0 },
     ])
     .returning();
 
   const mealByName = new Map(createdMeals.map((m) => [m.name, m]));
   const dogSalsicha = mealByName.get("Cachorro de salsicha")!.id;
   const dogLinguica = mealByName.get("Cachorro de linguiça")!.id;
+  const dogLinguicaGuaracamp = mealByName.get("Cachorro de Linguiça + Guaracamp")!.id;
   const comboFomeZero = mealByName.get("Combo Fome Zero")!.id;
   const combo1 = mealByName.get("Combo 1")!.id;
   const combo2 = mealByName.get("Combo 2")!.id;
@@ -210,6 +215,9 @@ async function seedMenuAri(executor: Executor, establishmentId: number) {
     // Cachorros: complementos e molhos à escolha
     ...complementos.map((itemId) => ({ mealId: dogSalsicha, itemId, role: "choice" as const })),
     ...complementos.map((itemId) => ({ mealId: dogLinguica, itemId, role: "choice" as const })),
+    // Cachorro de Linguiça + Guaracamp: complementos e molhos à escolha, Guaracamp inclusa
+    ...complementos.map((itemId) => ({ mealId: dogLinguicaGuaracamp, itemId, role: "choice" as const })),
+    { mealId: dogLinguicaGuaracamp, itemId: guaracamp, role: "included" as const },
     // Combo Fome Zero: o cachorro leva complementos à escolha e já vem com Guaracamp e maionese temperada
     ...escolhasFomeZero.map((itemId) => ({ mealId: comboFomeZero, itemId, role: "choice" as const })),
     { mealId: comboFomeZero, itemId: guaracamp, role: "included" as const },
