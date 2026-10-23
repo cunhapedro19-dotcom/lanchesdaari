@@ -169,6 +169,9 @@ async function seedMenuAri(executor: Executor, establishmentId: number) {
   const linguica = byName.get("Linguiça")!.id;
   const guaracamp = byName.get("Guaracamp")!.id;
   const maioneseTemperada = byName.get("Maionese temperada")!.id;
+  // No Combo Fome Zero a maionese temperada já vem inclusa, então ela sai da lista
+  // de escolhas (o banco não aceita o mesmo item com dois papéis no mesmo produto).
+  const escolhasFomeZero = complementos.filter((id) => id !== maioneseTemperada);
 
   const createdMeals = await executor
     .insert(meals)
@@ -182,7 +185,7 @@ async function seedMenuAri(executor: Executor, establishmentId: number) {
       { establishmentId, name: "Batata grande completa", category: "Batatas Fritas", description: "", priceCents: 2000, sortOrder: 5, maxChoices: 0 },
       { establishmentId, name: "Batata Maluca média", category: "Batatas Fritas", description: "", priceCents: 1750, sortOrder: 6, maxChoices: 0 },
       // Combos
-      { establishmentId, name: "Combo Fome Zero", category: "Combos", description: "1 cachorro-quente de salsicha + 1 batata frita simples + 1 Guaracamp + 1 maionese temperada.", priceCents: 1500, sortOrder: 7, maxChoices: complementos.length },
+      { establishmentId, name: "Combo Fome Zero", category: "Combos", description: "1 cachorro-quente de salsicha + 1 batata frita simples + 1 Guaracamp + 1 maionese temperada.", priceCents: 1500, sortOrder: 7, maxChoices: escolhasFomeZero.length },
       { establishmentId, name: "Combo 1", category: "Combos", description: "1 cachorro-quente de salsicha ou linguiça + 1 Guaracamp.", priceCents: 1000, sortOrder: 8, maxChoices: complementos.length },
       { establishmentId, name: "Combo 2", category: "Combos", description: "1 Batata Maluca média + 1 Guaracamp.", priceCents: 1750, sortOrder: 9, maxChoices: 0 },
       // Sobremesas
@@ -205,7 +208,7 @@ async function seedMenuAri(executor: Executor, establishmentId: number) {
     ...complementos.map((itemId) => ({ mealId: dogSalsicha, itemId, role: "choice" as const })),
     ...complementos.map((itemId) => ({ mealId: dogLinguica, itemId, role: "choice" as const })),
     // Combo Fome Zero: o cachorro leva complementos à escolha e já vem com Guaracamp e maionese temperada
-    ...complementos.map((itemId) => ({ mealId: comboFomeZero, itemId, role: "choice" as const })),
+    ...escolhasFomeZero.map((itemId) => ({ mealId: comboFomeZero, itemId, role: "choice" as const })),
     { mealId: comboFomeZero, itemId: guaracamp, role: "included" as const },
     { mealId: comboFomeZero, itemId: maioneseTemperada, role: "included" as const },
     // Combo 1: escolhe salsicha ou linguiça, complementos à escolha e Guaracamp incluso

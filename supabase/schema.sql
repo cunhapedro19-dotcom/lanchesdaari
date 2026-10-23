@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════
--- Mary Delivery — criação das tabelas no Supabase
+-- Lanches da Ari — criação das tabelas no Supabase
 --
 -- Como usar: Supabase → SQL Editor → New query → cole TUDO daqui → Run.
 -- Pode rodar mais de uma vez sem erro (é idempotente: "if not exists").

@@ -77,7 +77,7 @@ from establishments e, (values
   ('Batata grande completa',  'Batatas Fritas', '', 2000, 5, 0),
   ('Batata Maluca média',     'Batatas Fritas', '', 1750, 6, 0),
   -- COMBOS
-  ('Combo Fome Zero', 'Combos', '1 cachorro-quente de salsicha + 1 batata frita simples + 1 Guaracamp + 1 maionese temperada.', 1500, 7, 14),
+  ('Combo Fome Zero', 'Combos', '1 cachorro-quente de salsicha + 1 batata frita simples + 1 Guaracamp + 1 maionese temperada.', 1500, 7, 13),
   ('Combo 1',         'Combos', '1 cachorro-quente de salsicha ou linguiça + 1 Guaracamp.',                                     1000, 8, 14),
   ('Combo 2',         'Combos', '1 Batata Maluca média + 1 Guaracamp.',                                                         1750, 9, 0),
   -- SOBREMESAS
@@ -137,7 +137,6 @@ with
       ('Combo Fome Zero',      'Ketchup',            'choice'),
       ('Combo Fome Zero',      'Maionese',           'choice'),
       ('Combo Fome Zero',      'Mostarda',           'choice'),
-      ('Combo Fome Zero',      'Maionese temperada', 'choice'),
       ('Combo Fome Zero',      'Guaracamp',          'included'),
       ('Combo 1',              'Salsicha',           'protein'),
       ('Combo 1',              'Linguiça',           'protein'),
