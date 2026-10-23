@@ -41,7 +41,7 @@ export default async function EstablishmentHomePage({ params }: Props) {
             <div className="absolute inset-x-0 bottom-0 p-6 text-white">
               <div className="flex items-end gap-3">
                 {config.logoUrl && (
-                  <img src={config.logoUrl} alt={config.name} className="h-16 w-16 shrink-0 rounded-2xl border-2 border-ari-red/60 bg-night-900 object-cover shadow-md" />
+                  <img src={config.logoUrl} alt={config.name} className="h-16 w-16 shrink-0 rounded-2xl border-2 border-ari-red/60 bg-night-900 object-contain p-0.5 shadow-md" />
                 )}
                 <div>
                   <h1 className="font-display text-4xl uppercase leading-[0.95]">
@@ -56,25 +56,31 @@ export default async function EstablishmentHomePage({ params }: Props) {
         ) : (
           <div className="hero-glow absolute inset-0 grid place-items-center px-6 text-center">
             <div>
-              {/* Se tem logo cadastrada, ela é a estrela do topo; o emoji só entra se não tiver logo */}
+              {/* Se tem logo cadastrada, ela é a estrela do topo: a arte já traz o nome,
+                  então entra no lugar do título. Emoji + nome em texto só sem logo. */}
               {config.logoUrl ? (
-                <img
-                  src={config.logoUrl}
-                  alt={config.name}
-                  className="mx-auto h-28 w-28 rounded-3xl border-2 border-ari-red/60 object-cover shadow-lg"
-                />
+                <h1>
+                  <img
+                    src={config.logoUrl}
+                    alt={config.name}
+                    className="mx-auto w-72 max-w-full drop-shadow-[0_0_28px_rgba(255,209,0,0.22)]"
+                    fetchPriority="high"
+                  />
+                </h1>
               ) : (
-                <p className="text-6xl">{config.emoji}</p>
+                <>
+                  <p className="text-6xl">{config.emoji}</p>
+                  <h1 className="mt-3 font-display text-6xl uppercase leading-[0.95]">
+                    <span className="glow-red text-ari-red">{firstWord}</span>
+                    {restWords.length > 0 && (
+                      <>
+                        <br />
+                        <span className="glow-yellow text-ari-yellow">{restWords.join(" ")}</span>
+                      </>
+                    )}
+                  </h1>
+                </>
               )}
-              <h1 className="mt-3 font-display text-6xl uppercase leading-[0.95]">
-                <span className="glow-red text-ari-red">{firstWord}</span>
-                {restWords.length > 0 && (
-                  <>
-                    <br />
-                    <span className="glow-yellow text-ari-yellow">{restWords.join(" ")}</span>
-                  </>
-                )}
-              </h1>
               {config.description && <p className="mt-4 text-sm font-semibold text-white/80">{config.description}</p>}
             </div>
           </div>

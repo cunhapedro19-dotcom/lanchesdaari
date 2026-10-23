@@ -22,6 +22,7 @@ begin;
 -- 1) Dados do negócio
 update establishments set
   description = 'Cachorro-quente, batatas e combos — monte seu pedido e envie pelo WhatsApp.',
+  logo_url    = '/logo-lanche-da-ari.png',
   updated_at  = now()
 where slug = 'lanches-da-ari';
 

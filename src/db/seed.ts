@@ -40,6 +40,7 @@ export async function ensureSeeded(): Promise<void> {
         slug: "lanches-da-ari",
         name: "Lanches da Ari",
         emoji: "🌭",
+        logoUrl: "/logo-lanche-da-ari.png",
         description: "Cachorro-quente, batatas e combos — monte seu pedido e envie pelo WhatsApp.",
         // WhatsApp do dono: (21) 98712-2872
         whatsappNumber: "5521987122872",
@@ -73,6 +74,7 @@ export type NewEstablishmentInput = {
   appDeliveryEnabled?: boolean;
   appDeliveryService?: string;
   heroUrl?: string | null;
+  logoUrl?: string | null;
   openingDays?: string;
   openingHours?: string;
   deliveryAreas?: string;
@@ -92,6 +94,7 @@ export async function createEstablishment(executor: Executor, input: NewEstablis
       emoji: input.emoji ?? "🌭",
       description: input.description ?? "",
       heroUrl: input.heroUrl ?? null,
+      logoUrl: input.logoUrl ?? null,
       whatsappNumber: input.whatsappNumber ?? "",
       // Sem WhatsApp válido o cardápio nasce pausado: só abre depois que o número for cadastrado no painel
       acceptingOrders: isValidWhatsApp(input.whatsappNumber ?? ""),
